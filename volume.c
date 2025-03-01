@@ -46,7 +46,10 @@ update(void)
 	if((n = pread(vfd, buf, sizeof(buf)-1, 0)) <= 0)
 		sysfatal("pread: %r");
 	buf[n] = 0;
-	strtok(buf, " ");
+	s = strstr(buf, ismixfs? "mix": "master");
+	if(s == nil)
+		sysfatal("unknown volume device");
+	strtok(s, " ");
 	s = strtok(nil, " ");
 	volume = strtol(s, nil, 0);
 }
@@ -67,13 +70,13 @@ main()
 	Point p;
 	double rad;
 	int Etimer, key, d;
-	char buf[3];
+	char buf[32];
 
 	vfd = open("/dev/volume", ORDWR);
 	if(vfd < 0)
 		sysfatal("open: %r");
 	read(vfd, buf, sizeof buf);
-	ismixfs = strncmp(buf, "mix", 3) == 0;
+	ismixfs = strstr(buf, "mix") != nil;
 	update();
 	if(initdraw(0, 0, "volume") < 0)
 		sysfatal("initdraw: %r");

@@ -69,13 +69,15 @@ main()
 	Event e;
 	Point p;
 	double rad;
-	int Etimer, key, d;
+	int n, Etimer, key, d;
 	char buf[32];
 
 	vfd = open("/dev/volume", ORDWR);
 	if(vfd < 0)
 		sysfatal("open: %r");
-	read(vfd, buf, sizeof buf);
+	if((n = read(vfd, buf, sizeof(buf)-1)) <= 0)
+		sysfatal("read: %r");
+	buf[n] = 0;
 	ismixfs = strstr(buf, "mix") != nil;
 	update();
 	if(initdraw(0, 0, "volume") < 0)

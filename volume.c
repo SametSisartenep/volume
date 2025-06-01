@@ -7,8 +7,16 @@ enum {
 	SEC = 1000
 };
 
-int vfd, volume;
-int ismixfs;
+typedef struct Volume Volume;
+struct Volume
+{
+	char dev[32];
+	int fd;
+	int lvl[2];
+	int ismixfs;
+};
+
+Volume vol;
 Image *knob;
 Image *back;
 Image *rim;
@@ -18,7 +26,7 @@ volumept(Point c, int volume, int r)
 {
 	double rad;
 
-	rad = (double)(volume*3.0+30) * PI/180.0;
+	rad = (double)(volume*3.0 + 30) * PI/180.0;
 	c.x -= sin(rad) * r;
 	c.y += cos(rad) * r;
 	return c;
@@ -28,30 +36,50 @@ void
 redraw(void)
 {
 	Point c;
+	char v[5]; /* nnn% */
 
 	c = divpt(addpt(screen->r.min, screen->r.max), 2);
+	snprint(v, sizeof(v), "%d%%", vol.lvl[0]);
+
 	draw(screen, screen->r, back, nil, ZP);
-	line(screen, volumept(c, 0, 45), volumept(c, 0, 40), 0, 0, 1, display->black, ZP);
-	line(screen, volumept(c, 100, 45), volumept(c, 100, 40), 0, 0, 1, display->black, ZP);
-	ellipse(screen, c, 40, 40, 1, rim, ZP);
-	fillellipse(screen, volumept(c, volume, 30), 3, 3, knob, ZP);
+	string(screen, addpt(c, Pt(0-stringwidth(font, v)/2, -32-font->height)), display->black, ZP, font, v);
+	/* knob stops */
+	line(screen, volumept(c, 0, 35), volumept(c, 0, 30), 0, 0, 1, display->black, ZP);
+	line(screen, volumept(c, 100, 35), volumept(c, 100, 30), 0, 0, 1, display->black, ZP);
+	/* knob */
+	ellipse(screen, c, 30, 30, 1, rim, ZP);
+	fillellipse(screen, volumept(c, vol.lvl[0], 20), 3, 3, knob, ZP);
+	/* dev name */
+	string(screen, addpt(c, Pt(0-stringwidth(font, vol.dev)/2, 32)), display->black, ZP, font, vol.dev);
 }
 
 void
 update(void)
 {
-	char buf[256], *s;
-	int n;
+	char buf[256], *s, *e, *f[4];
+	int n, nf;
 
-	if((n = pread(vfd, buf, sizeof(buf)-1, 0)) <= 0)
+	if((n = pread(vol.fd, buf, sizeof(buf)-1, 0)) <= 0)
 		sysfatal("pread: %r");
 	buf[n] = 0;
-	s = strstr(buf, ismixfs? "mix": "master");
-	if(s == nil)
-		sysfatal("unknown volume device");
-	strtok(s, " ");
-	s = strtok(nil, " ");
-	volume = strtol(s, nil, 0);
+
+	s = buf;
+	while((e = strchr(s, '\n')) != nil){
+		*e++ = 0;
+
+		nf = tokenize(s, f, nelem(f));
+		if(nf < 2)
+			break;
+
+		if(strcmp(f[0], "dev") == 0){
+			snprint(vol.dev, sizeof(vol.dev), "%s", f[1]);
+			vol.ismixfs = 1;
+		}else if(strcmp(f[0], "mix") == 0 || strcmp(f[0], "master") == 0){
+			vol.lvl[0] = strtol(f[1], nil, 0);
+			vol.lvl[1] = strtol(f[2], nil, 0);
+		}
+		s = e;
+	}
 }
 
 void
@@ -63,35 +91,49 @@ eresized(int new)
 }
 
 void
-main()
+usage(void)
+{
+	fprint(2, "usage: %s\n", argv0);
+	exits("usage");
+}
+
+void
+main(int argc, char *argv[])
 {
 	Mouse m;
 	Event e;
 	Point p;
 	double rad;
-	int n, Etimer, key, d;
-	char buf[32];
+	int Etimer, ev, d;
 
-	vfd = open("/dev/volume", ORDWR);
-	if(vfd < 0)
+	ARGBEGIN{
+	default: usage();
+	}ARGEND;
+	if(argc != 0)
+		usage();
+
+	vol.fd = open("/dev/volume", ORDWR);
+	if(vol.fd < 0)
 		sysfatal("open: %r");
-	if((n = read(vfd, buf, sizeof(buf)-1)) <= 0)
-		sysfatal("read: %r");
-	buf[n] = 0;
-	ismixfs = strstr(buf, "mix") != nil;
+
 	update();
 	if(initdraw(0, 0, "volume") < 0)
 		sysfatal("initdraw: %r");
+
 	back = allocimagemix(display, 0x88FF88FF, DWhite);
 	knob = allocimage(display, Rect(0,0,1,1), CMAP8, 1, 0x008800FF);
 	rim = allocimage(display, Rect(0,0,1,1), CMAP8, 1, 0x004400FF);
+
 	einit(Emouse);
 	Etimer = etimer(0, 2*SEC);
 	redraw();
+
 	for(;;){
-		key = event(&e);
-		if(key == Emouse){
+		ev = event(&e);
+		if(ev == Emouse){
 			m = e.mouse;
+			if(!(m.buttons & (1|8|16)))
+				continue;
 			if(m.buttons & 1){
 				p = subpt(m.xy, divpt(addpt(screen->r.min, screen->r.max), 2));
 				rad = atan2(-p.x, p.y);
@@ -105,11 +147,15 @@ main()
 					d = 100;
 				else
 					d -= 30;
-				volume = d;
-				fprint(vfd, "%s%d", ismixfs? "mix " : "", volume);
-				redraw();
+				vol.lvl[0] = d;
 			}
-		}else if(key == Etimer){
+			if(m.buttons & 8 && vol.lvl[0] < 100)
+				vol.lvl[0]++;
+			if(m.buttons & 16 && vol.lvl[0] > 0)
+				vol.lvl[0]--;
+			fprint(vol.fd, "%s%d", vol.ismixfs? "mix " : "", vol.lvl[0]);
+			redraw();
+		}else if(ev == Etimer){
 			update();
 			redraw();
 		}
